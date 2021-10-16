@@ -168,7 +168,27 @@ class simple_smap {
     typename std::unordered_map<Key, uint32_t, _Hash>::iterator End() {
         return info_map_.end();
     }
-    
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator Erase(typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
+        return info_map_.erase(it);
+    }
+
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator DelInfo(typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
+        if (it == info_map_.end()) return info_map_.end();
+
+        auto idx = it->second;
+        auto info = GetInfo(idx);
+
+        ClearFromShm(info);
+
+        return info_map_.erase(it);
+    }
+
+    T *GetInfo(typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
+        if (it == info_map_.end()) return nullptr;
+
+        auto idx = it->second;
+        return GetInfo(idx);
+    };
     T *GetInfo(int32_t index) {
         SimpleSmapLinkList<T> *node = info_head_ + index;
         return &(node->info);

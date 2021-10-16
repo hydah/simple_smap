@@ -64,28 +64,32 @@ int main() {
         std::cerr << "init key failed" << std::endl;
     }
     UserKey user_key(1, 2, 3);
-    User *user = smap.Add(user_key);
-    if (user == nullptr) {
-        std::cerr << "add user failed" << std::endl;
-    }
+    // User *user = smap.Add(user_key);
+    // if (user == nullptr) {
+    //     std::cerr << "add user failed" << std::endl;
+    // }
 
-    if (!smap.Have(user_key)) {
-        std::cerr << "can not find user" << std::endl;
-    }
+    // if (!smap.Have(user_key)) {
+    //     std::cerr << "can not find user" << std::endl;
+    // }
 
-    if (!smap.Del(user_key)) {
-        std::cerr << "delete faild" << std::endl;
-    }
-    if (smap.Have(user_key)) {
-        std::cerr << "delete faild, still have" << std::endl;
-    }
-    std::cout << " all success" << std::endl;
+    // if (!smap.Del(user_key)) {
+    //     std::cerr << "delete faild" << std::endl;
+    // }
+    // if (smap.Have(user_key)) {
+    //     std::cerr << "delete faild, still have" << std::endl;
+    // }
+    // std::cout << " all success" << std::endl;
 
     smap.Add(user_key);
     smap.Add(UserKey(2,3,4));
     for (auto it = smap.Begin(); it != smap.End();) {
         auto key = it->first;
-        std::cout << "key: " << key.ToString() << " value: " << smap.GetInfo(it->second)->tinyid << std::endl;
+        std::cout << "key: " << key.ToString() << " value: " << smap.GetInfo(it)->tinyid << std::endl;
+        if (smap.GetInfo(it)->tinyid == 3) {
+            smap.DelInfo(it++);
+            continue;
+        }
         ++it;
     }
 
