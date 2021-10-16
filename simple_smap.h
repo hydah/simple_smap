@@ -22,6 +22,13 @@ template <typename T, typename Key>
 struct __GetKey<T *, Key> {
     Key operator()(T *t) const noexcept { return reinterpret_cast<Key>(t); }
 };
+
+template <typename T, typename Key>
+struct __ImpWithKey;
+template <typename T, typename Key>
+struct __ImpWithKey<T *, Key> {
+    bool operator()(T *t, Key key) const noexcept { return false; }
+};
 }  // namespace std
 
 namespace ssmap {
@@ -34,7 +41,7 @@ struct SimpleSmapLinkList {
 #pragma pack()
 
 template <typename T, typename Key, typename _validate = std::__Validate<T *>,
-          typename _get_key = std::__GetKey<T *, Key>, typename _Hash = std::hash<Key>>
+          typename _get_key = std::__GetKey<T *, Key>,  typename _imp_with_key = std::__ImpWithKey<T*, Key>, typename _Hash = std::hash<Key>>
 class simple_smap {
  public:
     bool Init(int32_t shm_key, uint32_t info_num) {
@@ -64,6 +71,7 @@ class simple_smap {
 
         info_head_ = reinterpret_cast<SimpleSmapLinkList<T> *>(shm_head);
         if (!is_new) {
+            std::cerr << "attach shm" << std::endl;
             // 初始化map
             SimpleSmapLinkList<T> *cur_node = nullptr;
             uint32_t free_num = 0;
@@ -87,6 +95,7 @@ class simple_smap {
 
             return true;
         } else {
+            std::cerr << "creat new shm" << std::endl;
             memset(info_head_, 0, shm_size);
             info_head_->next_block = kInvalidIndex;
 
@@ -117,6 +126,7 @@ class simple_smap {
 
         T *info = &node->info;
         memset(info, 0, sizeof(*info));
+        _imp_with_key()(info, key);
         info_map_.emplace(key, free_idx);
         std::cerr << s_printf("add info: %u", free_idx) << std::endl;
         return info;
@@ -152,11 +162,20 @@ class simple_smap {
         return false;
     }
 
- private:
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator Begin() {
+        return info_map_.begin();
+    }
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator End() {
+        return info_map_.end();
+    }
+    
     T *GetInfo(int32_t index) {
         SimpleSmapLinkList<T> *node = info_head_ + index;
         return &(node->info);
     };
+
+ private:
+    
     std::string s_printf(const char *fmt, ...) {
         static __thread char ssmap_ostr[10 * 1024] = {0};
 
