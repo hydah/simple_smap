@@ -157,9 +157,21 @@ class simple_smap {
 
         return true;
     }
+    uint32_t GetIndex(T *info) {
+        auto index = reinterpret_cast<SimpleSmapLinkList<T> *>(info) - info_head_;
+        return index;
+    }
+    bool EraseKey(Key key) {
+        return info_map_.erase(key);
+    }
     bool Have(Key key) {
         if (info_map_.find(key) != info_map_.end()) return true;
         return false;
+    }
+    T* Get(Key key) {
+        if (!Have(key)) return nullptr;
+        auto idx = info_map_[key];
+        return GetInfo(idx);
     }
 
     typename std::unordered_map<Key, uint32_t, _Hash>::iterator Begin() {
@@ -194,6 +206,12 @@ class simple_smap {
         return &(node->info);
     };
 
+    T* GetInfoWithKey(Key key) {
+        if (!Have(key)) return nullptr;
+        auto idx = info_map_[key];
+        return GetInfo(idx);
+    }
+
  private:
     
     std::string s_printf(const char *fmt, ...) {
@@ -211,7 +229,6 @@ class simple_smap {
     char *GetShm(int32_t key, int32_t size, int32_t flag) {
         int shmid;
         char *shm;
-        char err_msg[50];
 
         if (0 == key) {
             std::cerr << s_printf("shmget %d %d: iKey don't zero(0)", key, size) << std::endl;
