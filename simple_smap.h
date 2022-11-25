@@ -1,7 +1,7 @@
 #pragma once
 
-#include <string.h>
 #include <stdarg.h>
+#include <string.h>
 #include <sys/shm.h>
 #include <functional>
 #include <iostream>
@@ -31,24 +31,25 @@ struct __ImpWithKey<T *, Key> {
 };
 }  // namespace std
 
-namespace ssmap {
+namespace smap {
 #pragma pack(1)
 template <typename T>
-struct SimpleSmapLinkList {
+struct SmapLinkList {
     T info;
     uint32_t next_block;
 };
 #pragma pack()
 
 template <typename T, typename Key, typename _validate = std::__Validate<T *>,
-          typename _get_key = std::__GetKey<T *, Key>,  typename _imp_with_key = std::__ImpWithKey<T*, Key>, typename _Hash = std::hash<Key>>
-class simple_smap {
+          typename _get_key = std::__GetKey<T *, Key>,
+          typename _imp_with_key = std::__ImpWithKey<T *, Key>, typename _Hash = std::hash<Key>>
+class Smap {
  public:
     bool Init(int32_t shm_key, uint32_t info_num) {
         data_num_ = info_num;
-        size_t shm_size = (info_num + 1) * sizeof(SimpleSmapLinkList<T>);  // 多申请一个，头不占用
+        size_t shm_size = (info_num + 1) * sizeof(SmapLinkList<T>);  // 多申请一个，头不占用
         std::cout << s_printf("info shm key:%u(0x%x): InfoLinkList size: %u, shm size: %u", shm_key,
-                              shm_key, sizeof(SimpleSmapLinkList<T>), shm_size)
+                              shm_key, sizeof(SmapLinkList<T>), shm_size)
                   << std::endl;
 
         bool is_new = false;
@@ -60,20 +61,19 @@ class simple_smap {
         }
         if (!shm_head || ret < 0) {
             if (is_new) {
-                // MonitorSum(kMonitorCreateRoomShmFail, 1);
                 std::cerr << "add new" << std::endl;
             } else {
-                // MonitorSum(kMonitorAttachRoomShmFail, 1);
                 std::cerr << "attach" << std::endl;
             }
             return false;
         }
 
-        info_head_ = reinterpret_cast<SimpleSmapLinkList<T> *>(shm_head);
+        info_head_ = reinterpret_cast<SmapLinkList<T> *>(shm_head);
         if (!is_new) {
             std::cerr << "attach shm" << std::endl;
+            info_head_->next_block = kInvalidIndex;
             // 初始化map
-            SimpleSmapLinkList<T> *cur_node = nullptr;
+            SmapLinkList<T> *cur_node = nullptr;
             uint32_t free_num = 0;
             for (int32_t i = info_num; i > 0; i--) {
                 cur_node = info_head_ + i;
@@ -100,7 +100,7 @@ class simple_smap {
             info_head_->next_block = kInvalidIndex;
 
             for (int32_t i = info_num; i > 0; i--) {
-                SimpleSmapLinkList<T> *info_node = info_head_ + i;
+                SmapLinkList<T> *info_node = info_head_ + i;
                 info_node->next_block = info_head_->next_block;
                 info_head_->next_block = i;
             }
@@ -109,28 +109,82 @@ class simple_smap {
 
         return true;
     }
+
+    void RebuildShmList() {
+        info_head_->next_block = kInvalidIndex;
+        for (int32_t i = data_num_; i > 0; i--) {
+            auto cur_node = info_head_ + i;
+            T *info = &cur_node->info;
+
+            if (info_map_.count(_get_key()(info)) != 0) continue;
+
+            memset(info, 0, sizeof(*info));
+            cur_node->next_block = info_head_->next_block;
+            info_head_->next_block = i;
+        }
+    }
+
     T *Add(Key key) {
+        std::cout << "key is " << key << std::endl;
         if (info_map_.find(key) != info_map_.end()) {
             auto index = info_map_[key];
-            SimpleSmapLinkList<T> *node = info_head_ + index;
+            SmapLinkList<T> *node = info_head_ + index;
             return &node->info;
         }
 
         auto free_idx = info_head_->next_block;
+
         if (free_idx == kInvalidIndex) {
-            return nullptr;  //没有空闲节点
+            // 当出现不能分配时, 先尝试恢复下, 如果恢复完后仍然分配不了, 则分配失败
+            auto pre_idx = free_idx;
+            RebuildShmList();
+
+            free_idx = info_head_->next_block;
+
+            std::cerr
+                << s_printf(
+                       "free idx=%u, info_map size=%u, try rebuild shm mem list, after free idx=%u",
+                       pre_idx, info_map_.size(), free_idx)
+                << std::endl;
+
+            if (free_idx == kInvalidIndex) {
+                // rebuild 后, 仍然没有空闲节点, 则直接返回空, 分配失败
+                std::cerr << s_printf("no free shm block, info_map size=%u", info_map_.size())
+                          << std::endl;
+                return nullptr;
+            }
         }
-        SimpleSmapLinkList<T> *node = info_head_ + free_idx;
+
+        SmapLinkList<T> *node = info_head_ + free_idx;
+        T *info = &node->info;
+        if (info_map_.count(_get_key()(info)) != 0) {
+            std::cerr << "key " << _get_key()(info) << "has exist"
+                      << s_printf("alloc index=%u, rebuild", free_idx) << std::endl;
+            // 当前拿到的free index, 在sh map里有效, 说明出现了回环. rebuild
+            // Head->a->b->c->a, Head->a->a
+            RebuildShmList();
+
+            free_idx = info_head_->next_block;
+            if (free_idx == kInvalidIndex) {
+                std::cerr << s_printf("after rebuild, no free user shm block, user_map size=%u",
+                                      info_map_.size())
+                          << std::endl;
+                return nullptr;  //没有空闲节点
+            } else {
+                node = info_head_ + free_idx;
+                T *info = &node->info;
+            }
+        }
+
         info_head_->next_block = node->next_block;
         node->next_block = kInvalidIndex;
-
-        T *info = &node->info;
         memset(info, 0, sizeof(*info));
         _imp_with_key()(info, key);
         info_map_.emplace(key, free_idx);
         std::cerr << s_printf("add info: %u", free_idx) << std::endl;
         return info;
     }
+
     bool Del(Key key) {
         if (!Have(key)) return false;
 
@@ -146,29 +200,31 @@ class simple_smap {
         std::cerr << "del :" << index << std::endl;
         return true;
     }
+
     bool ClearFromShm(T *info) {
         if (!info) return false;
 
         memset(info, 0, sizeof(*info));
-        SimpleSmapLinkList<T> *node = reinterpret_cast<SimpleSmapLinkList<T> *>(info);
+        SmapLinkList<T> *node = reinterpret_cast<SmapLinkList<T> *>(info);
         node->next_block = info_head_->next_block;
-        auto index = reinterpret_cast<SimpleSmapLinkList<T> *>(info) - info_head_;
+        auto index = reinterpret_cast<SmapLinkList<T> *>(info) - info_head_;
         info_head_->next_block = index;
 
         return true;
     }
+
     uint32_t GetIndex(T *info) {
-        auto index = reinterpret_cast<SimpleSmapLinkList<T> *>(info) - info_head_;
+        auto index = reinterpret_cast<SmapLinkList<T> *>(info) - info_head_;
         return index;
     }
-    bool EraseKey(Key key) {
-        return info_map_.erase(key);
-    }
+
+    // map operators
+    bool EraseKey(Key key) { return info_map_.erase(key); }
     bool Have(Key key) {
         if (info_map_.find(key) != info_map_.end()) return true;
         return false;
     }
-    T* Get(Key key) {
+    T *Get(Key key) {
         if (!Have(key)) return nullptr;
         auto idx = info_map_[key];
         return GetInfo(idx);
@@ -177,14 +233,14 @@ class simple_smap {
     typename std::unordered_map<Key, uint32_t, _Hash>::iterator Begin() {
         return info_map_.begin();
     }
-    typename std::unordered_map<Key, uint32_t, _Hash>::iterator End() {
-        return info_map_.end();
-    }
-    typename std::unordered_map<Key, uint32_t, _Hash>::iterator Erase(typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator End() { return info_map_.end(); }
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator Erase(
+        typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
         return info_map_.erase(it);
     }
 
-    typename std::unordered_map<Key, uint32_t, _Hash>::iterator DelInfo(typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
+    typename std::unordered_map<Key, uint32_t, _Hash>::iterator DelInfo(
+        typename std::unordered_map<Key, uint32_t, _Hash>::iterator it) {
         if (it == info_map_.end()) return info_map_.end();
 
         auto idx = it->second;
@@ -202,18 +258,17 @@ class simple_smap {
         return GetInfo(idx);
     };
     T *GetInfo(int32_t index) {
-        SimpleSmapLinkList<T> *node = info_head_ + index;
+        SmapLinkList<T> *node = info_head_ + index;
         return &(node->info);
     };
 
-    T* GetInfoWithKey(Key key) {
+    T *GetInfoWithKey(Key key) {
         if (!Have(key)) return nullptr;
         auto idx = info_map_[key];
         return GetInfo(idx);
     }
 
  private:
-    
     std::string s_printf(const char *fmt, ...) {
         static __thread char ssmap_ostr[10 * 1024] = {0};
 
@@ -269,9 +324,9 @@ class simple_smap {
         return 0;
     }
 
-    SimpleSmapLinkList<T> *info_head_;
+    SmapLinkList<T> *info_head_;
     std::unordered_map<Key, uint32_t, _Hash> info_map_;
     uint32_t data_num_;
     const int32_t kInvalidIndex = 0;
 };
-}  // namespace ssmap
+}  // namespace smap
